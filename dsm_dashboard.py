@@ -129,7 +129,7 @@ def _norm_plant_name(name: str) -> str:
 # ------------------------------------------
 def classify_plants_by_type(regions: list[str], start_date: str, end_date: str) -> dict:
     """Return mapping {plant_name: 'SOLAR'|'WIND'|'UNKNOWN'} using schedule window.
-    Rule: 
+    Rule:
     - WIND: Has scheduled power in early morning blocks (blocks 1-20, before 05:00)
     - SOLAR: Scheduled power only from block 21 onwards (05:00 or later)
     - UNKNOWN: No schedule data
