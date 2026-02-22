@@ -20,9 +20,6 @@ COPY . .
 # Ensure data directory exists
 RUN mkdir -p data
 
-# Download DB (local copy OR Google Drive)
-RUN python download_db.py
-
 # Environment config
 ENV DSM_HOST=0.0.0.0
 ENV DSM_PORT=8050
