@@ -28,5 +28,4 @@ ENV DSM_MASTER_DB_PATH=data/master.duckdb
 # Expose dashboard port
 EXPOSE 8050
 
-# Start dashboard
-CMD ["python", "dsm_dashboard.py"]
+CMD python download_db.py && python dsm_dashboard.py
