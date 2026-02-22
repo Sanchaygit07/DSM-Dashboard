@@ -1,0 +1,11 @@
+# Exclude data and large artifacts from Docker build
+*.duckdb
+STU Raw/
+Raw_*/
+Raw Data for Dashboard/
+__pycache__/
+*.pyc
+.env
+.git/
+.venv/
+venv/
