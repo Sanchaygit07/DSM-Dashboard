@@ -1,0 +1,6 @@
+*.duckdb
+__pycache__/
+Raw_*
+Downloader*
+*.exe
+*.msi
