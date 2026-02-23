@@ -4,21 +4,23 @@ download_db.py
 Downloads (or locates) the master DuckDB file before the app starts.
 
 Priority order:
-  1. DB already exists at DB_PATH → skip download
-  2. DB_URL env var is set        → download from that URL (Google Drive or direct)
-  3. Neither                      → print a clear warning and continue
-     (the app will show empty dropdowns but won't crash on startup)
+  1. DB already exists at DB_PATH  →  skip download
+  2. DB_URL env var is set          →  download via gdown (Google Drive) or requests (direct URL)
+  3. Neither                        →  print a clear warning and continue
+     (the app will start but dropdowns will be empty)
 
-Environment variables (set these in Render → Environment):
+Environment variables (set in Render → Environment):
   DSM_MASTER_DB_PATH   Path where the DB should be stored.
                        Default: <project_root>/data/master.duckdb
   DB_URL               Public download URL for the DB file.
-                       Supports:
+                       Supported formats:
                          • Google Drive share link:
                              https://drive.google.com/file/d/<FILE_ID>/view?usp=sharing
-                         • Google Drive direct export link:
-                             https://drive.google.com/uc?export=download&id=<FILE_ID>
-                         • Any direct HTTP/HTTPS URL to a .duckdb file
+                         • Google Drive open link:
+                             https://drive.google.com/open?id=<FILE_ID>
+                         • Any direct HTTP/HTTPS URL to a .duckdb binary
+
+IMPORTANT: Make sure gdown>=5.1.0 is listed in requirements.txt
 """
 from __future__ import annotations
 
@@ -26,8 +28,6 @@ import os
 import re
 import sys
 from pathlib import Path
-
-import requests
 
 # ---------------------------------------------------------------------------
 # Path resolution
@@ -45,99 +45,108 @@ _RAW_URL: str | None = os.getenv("DB_URL")
 # ---------------------------------------------------------------------------
 # Google Drive helpers
 # ---------------------------------------------------------------------------
-_GDRIVE_SHARE_RE = re.compile(
-    r"https://drive\.google\.com/file/d/([^/]+)/", re.IGNORECASE
-)
-_GDRIVE_UC_RE = re.compile(
-    r"https://drive\.google\.com/uc\?.*id=([^&]+)", re.IGNORECASE
-)
+_GDRIVE_PATTERNS = [
+    re.compile(r"drive\.google\.com/file/d/([a-zA-Z0-9_-]+)", re.IGNORECASE),
+    re.compile(r"drive\.google\.com/open\?id=([a-zA-Z0-9_-]+)", re.IGNORECASE),
+    re.compile(r"drive\.google\.com/uc\?.*id=([a-zA-Z0-9_-]+)", re.IGNORECASE),
+]
 
 
 def _extract_gdrive_id(url: str) -> str | None:
-    """Extract Google Drive file ID from share or export link."""
-    for pattern in (_GDRIVE_SHARE_RE, _GDRIVE_UC_RE):
+    """Extract Google Drive file ID from any supported GDrive URL format."""
+    for pattern in _GDRIVE_PATTERNS:
         m = pattern.search(url)
         if m:
             return m.group(1)
     return None
 
 
-def _gdrive_direct_url(file_id: str) -> str:
-    return f"https://drive.google.com/uc?export=download&id={file_id}&confirm=t"
-
-
-def _get_confirmation_token(response: requests.Response) -> str | None:
-    """
-    Google Drive shows an HTML warning page for large files.
-    This extracts the confirm token so we can retry with it.
-    """
-    # Check for NID cookie (older GDrive behaviour)
-    for key, value in response.cookies.items():
-        if key.startswith("download_warning"):
-            return value
-
-    # Newer GDrive: look for confirm=<TOKEN> in the redirect HTML
-    match = re.search(r'confirm=([0-9A-Za-z_\-]+)', response.text)
-    if match:
-        return match.group(1)
-    return None
-
-
 # ---------------------------------------------------------------------------
-# Core download
+# Download backends
 # ---------------------------------------------------------------------------
-def _download_from_url(url: str, dest: Path) -> None:
-    """Download a file from *url* to *dest*, handling Google Drive quirks."""
-    dest.parent.mkdir(parents=True, exist_ok=True)
 
-    session = requests.Session()
-
-    # Detect Google Drive and convert to direct-download URL
-    file_id = _extract_gdrive_id(url)
-    if file_id:
-        print(f"[download_db] Detected Google Drive file ID: {file_id}")
-        download_url = _gdrive_direct_url(file_id)
-    else:
-        download_url = url
-
-    print(f"[download_db] Requesting: {download_url}")
-    response = session.get(download_url, stream=True, timeout=120)
-    response.raise_for_status()
-
-    # Handle Google Drive large-file confirmation page
-    content_type = response.headers.get("Content-Type", "")
-    if "text/html" in content_type and file_id:
-        print("[download_db] Got HTML response from Google Drive — handling confirmation page...")
-        token = _get_confirmation_token(response)
-        if token:
-            confirmed_url = f"https://drive.google.com/uc?export=download&id={file_id}&confirm={token}"
-            print(f"[download_db] Retrying with confirm token: {confirmed_url}")
-            response = session.get(confirmed_url, stream=True, timeout=300)
-            response.raise_for_status()
-        else:
-            # Try the export/download endpoint as last resort
-            alt_url = f"https://drive.google.com/uc?export=download&id={file_id}&confirm=t"
-            print(f"[download_db] No token found; trying alt URL: {alt_url}")
-            response = session.get(alt_url, stream=True, timeout=300)
-            response.raise_for_status()
-
-    # Verify we got binary data, not another HTML page
-    final_type = response.headers.get("Content-Type", "")
-    if "text/html" in final_type:
-        snippet = response.text[:500]
+def _download_with_gdown(file_id: str, dest: Path) -> None:
+    """
+    Download a Google Drive file using gdown.
+    gdown handles virus scan warnings and large file confirmations automatically.
+    Requires: gdown>=5.1.0 in requirements.txt
+    """
+    try:
+        import gdown
+    except ImportError:
         raise RuntimeError(
-            f"[download_db] Still receiving HTML instead of binary after confirmation. "
-            f"Check that your Google Drive file is publicly shared (Anyone with the link → Viewer).\n"
-            f"Response snippet: {snippet}"
+            "[download_db] gdown is not installed.\n"
+            "  Add 'gdown>=5.1.0' to your requirements.txt and redeploy."
         )
 
-    # Stream to disk
-    total = 0
-    with open(dest, "wb") as f:
-        for chunk in response.iter_content(chunk_size=65536):
-            if chunk:
-                f.write(chunk)
-                total += len(chunk)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+
+    gdrive_url = f"https://drive.google.com/uc?id={file_id}"
+    print(f"[download_db] Google Drive file ID  : {file_id}")
+    print(f"[download_db] Downloading to        : {dest}")
+
+    output = gdown.download(
+        gdrive_url,
+        str(dest),
+        quiet=False,
+        fuzzy=True,          # handles various GDrive URL formats
+    )
+
+    if output is None or not dest.exists():
+        raise RuntimeError(
+            f"[download_db] gdown returned None — download failed.\n"
+            f"  Possible causes:\n"
+            f"    1. File is not shared as 'Anyone with the link → Viewer'\n"
+            f"    2. File ID is incorrect (check your DB_URL env var)\n"
+            f"    3. File has been moved or deleted in Google Drive\n"
+            f"  File ID used: {file_id}"
+        )
+
+    size_mb = dest.stat().st_size / 1_048_576
+    if size_mb < 0.001:
+        dest.unlink(missing_ok=True)
+        raise RuntimeError(
+            f"[download_db] Downloaded file is empty (0 bytes).\n"
+            f"  The Google Drive link may be pointing to an HTML page instead of the binary.\n"
+            f"  Verify the file is publicly shared and the File ID is correct."
+        )
+
+    print(f"[download_db] Download complete — {size_mb:.1f} MB written to {dest}")
+
+
+def _download_direct(url: str, dest: Path) -> None:
+    """
+    Download from a plain HTTP/HTTPS URL (non-Google-Drive: Dropbox, S3, etc.).
+    Falls back to this when DB_URL is not a Google Drive link.
+    """
+    try:
+        import requests
+    except ImportError:
+        raise RuntimeError(
+            "[download_db] requests is not installed.\n"
+            "  Add 'requests' to requirements.txt."
+        )
+
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    print(f"[download_db] Downloading from: {url}")
+    print(f"[download_db] Destination     : {dest}")
+
+    with requests.get(url, stream=True, timeout=300) as r:
+        r.raise_for_status()
+        content_type = r.headers.get("Content-Type", "")
+        if "text/html" in content_type:
+            raise RuntimeError(
+                f"[download_db] Received HTML instead of binary.\n"
+                f"  URL: {url}\n"
+                f"  Content-Type: {content_type}\n"
+                f"  Make sure the URL is a direct download link, not a web page."
+            )
+        total = 0
+        with open(dest, "wb") as f:
+            for chunk in r.iter_content(chunk_size=65536):
+                if chunk:
+                    f.write(chunk)
+                    total += len(chunk)
 
     print(f"[download_db] Download complete — {total / 1_048_576:.1f} MB written to {dest}")
 
@@ -145,10 +154,11 @@ def _download_from_url(url: str, dest: Path) -> None:
 # ---------------------------------------------------------------------------
 # Public entry point
 # ---------------------------------------------------------------------------
+
 def download_db() -> None:
     """
     Ensure master.duckdb exists at DB_PATH.
-    Called automatically when dsm_dashboard.py starts.
+    Called automatically at app startup from dsm_dashboard.py.
     """
     # 1. Already present — nothing to do
     if DB_PATH.exists():
@@ -158,27 +168,28 @@ def download_db() -> None:
 
     # 2. Try downloading from DB_URL
     if _RAW_URL:
-        print(f"[download_db] DB not found at {DB_PATH}. Downloading from DB_URL...")
-        try:
-            _download_from_url(_RAW_URL, DB_PATH)
-            return
-        except Exception as exc:
-            print(f"[download_db] ERROR during download: {exc}", file=sys.stderr)
-            raise
+        print(f"[download_db] DB not found at {DB_PATH}.")
+        file_id = _extract_gdrive_id(_RAW_URL)
+        if file_id:
+            # Google Drive URL → use gdown
+            _download_with_gdown(file_id, DB_PATH)
+        else:
+            # Plain HTTP URL (Dropbox, S3, Azure Blob, etc.) → use requests
+            _download_direct(_RAW_URL, DB_PATH)
+        return
 
-    # 3. Neither DB nor URL — warn clearly
+    # 3. Neither DB nor URL found — warn clearly but don't crash
     print(
         "[download_db] WARNING: master.duckdb not found and DB_URL is not set.\n"
         "  The app will start but Region/Plant dropdowns will be empty.\n"
-        "  Fix options:\n"
-        "    a) Set DB_URL env var in Render to your Google Drive share link, OR\n"
-        "    b) Commit data/master.duckdb to your repository (if file size allows).",
+        "  To fix, set DB_URL in Render → Environment to your Google Drive share link:\n"
+        "    https://drive.google.com/file/d/<YOUR_FILE_ID>/view?usp=sharing",
         file=sys.stderr,
     )
 
 
 # ---------------------------------------------------------------------------
-# Allow running standalone: python download_db.py
+# Allow running standalone for testing: python download_db.py
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
     print(f"[download_db] DB target path : {DB_PATH}")
