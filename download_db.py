@@ -1,26 +1,30 @@
 import os
+from pathlib import Path
+
 import requests
 
-# Local Windows path where your DB currently exists
-LOCAL_DB_PATH = r"C:\Users\Lenovo\Desktop\Project\sanchay_development\DSM MASTER\master.duckdb"
+# Local Windows path where your DB currently exists (local development convenience)
+LOCAL_DB_PATH = Path(r"C:\Users\Lenovo\Desktop\Project\sanchay_development\DSM MASTER\master.duckdb")
 
-# Path where the app expects the DB inside the project
-DB_PATH = "data/master.duckdb"
+_PROJECT_ROOT = Path(__file__).resolve().parent
 
-# Optional Google Drive fallback
+# Path where the app expects the DB inside the project (overrideable for deployment)
+DB_PATH = Path(os.getenv("DSM_MASTER_DB_PATH", str(_PROJECT_ROOT / "data" / "master.duckdb")))
+
+# Optional Google Drive fallback (for Render deployment)
 GDRIVE_URL = os.getenv("DB_URL")
 
 
 def download_db():
     # If DB already exists in project folder, skip
-    if os.path.exists(DB_PATH):
+    if DB_PATH.exists():
         print("DB already exists in project folder, skipping.")
         return
 
-    os.makedirs("data", exist_ok=True)
+    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 
     # First try copying from local Windows path (for local development)
-    if os.path.exists(LOCAL_DB_PATH):
+    if LOCAL_DB_PATH.exists():
         print("Copying DB from local Windows directory...")
         with open(LOCAL_DB_PATH, "rb") as src, open(DB_PATH, "wb") as dst:
             dst.write(src.read())
