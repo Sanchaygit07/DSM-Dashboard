@@ -3,6 +3,29 @@
 
 from __future__ import annotations
 
+# ============================================================
+# DB BOOTSTRAP — runs BEFORE any duckdb.connect() call.
+# Downloads master.duckdb from DB_URL env var if not present.
+# Set these in Render → Environment:
+#   DB_URL               = your Google Drive share link
+#   DSM_MASTER_DB_PATH   = (optional) custom path, default: data/master.duckdb
+# ============================================================
+import sys as _sys
+import os as _os
+from pathlib import Path as _Path
+
+_HERE = _Path(__file__).resolve().parent
+if str(_HERE) not in _sys.path:
+    _sys.path.insert(0, str(_HERE))
+
+try:
+    from download_db import download_db as _download_db
+    _download_db()
+except Exception as _boot_err:
+    print(f"[dsm_dashboard] WARNING: DB bootstrap failed — {_boot_err}", file=_sys.stderr)
+    print("[dsm_dashboard] App will start but dropdowns may be empty.", file=_sys.stderr)
+# ============================================================
+
 import json
 from datetime import datetime, timedelta
 
