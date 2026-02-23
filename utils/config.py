@@ -36,16 +36,20 @@ def get_master_db_path() -> str:
 
     Priority:
     - env `DSM_MASTER_DB_PATH`
-    - `master.duckdb` in project root
-    - fallback `master.duckdb` (cwd-relative)
+    - `data/master.duckdb` in project root
+    - `master.duckdb` in project root (legacy)
+    - fallback `data/master.duckdb` (cwd-relative)
     """
     env = os.getenv("DSM_MASTER_DB_PATH")
     if env:
         return env
-    candidate = _PROJECT_ROOT / "master.duckdb"
-    if candidate.exists():
-        return str(candidate)
-    return "master.duckdb"
+    candidate_data = _PROJECT_ROOT / "data" / "master.duckdb"
+    if candidate_data.exists():
+        return str(candidate_data)
+    candidate_root = _PROJECT_ROOT / "master.duckdb"
+    if candidate_root.exists():
+        return str(candidate_root)
+    return "data/master.duckdb"
 
 
 def get_nrpc_db_path() -> str:
